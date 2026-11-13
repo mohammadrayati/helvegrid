@@ -8,7 +8,7 @@ import pandas as pd
 import requests
 
 DATA = Path(__file__).parent / "data"
-HEADERS = {"User-Agent": "swiss-grid/0.1"}
+HEADERS = {"User-Agent": "helvegrid/0.1"}
 
 OSM_GRID = "https://zenodo.org/api/records/23896564/files/{}/content"
 SWISSGRID = "https://www.swissgrid.ch/dam/dataimport/energy-statistic/EnergieUebersichtCH-{}.xlsx"
@@ -50,6 +50,7 @@ def swissgrid(year):
     df.columns = [c.split("\n")[-1].strip() for c in df.columns]
     df = df.apply(pd.to_numeric, errors="coerce")
     df = df.resample("h").sum() / 1000
+    df = df[df.index.year == year]
     df.to_pickle(cache)
     return df
 
@@ -65,7 +66,8 @@ def generation(year):
     d, index = _energy_charts("public_power", f"generation_ch_{year}", country="ch",
                               start=f"{year}-01-01", end=f"{year}-12-31")
     df = pd.DataFrame({s["name"]: s["data"] for s in d["production_types"]}, index=index)
-    return df.resample("h").mean()
+    df = df.resample("h").mean()
+    return df[df.index.year == year]
 
 
 def plants():

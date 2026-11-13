@@ -1,6 +1,6 @@
-# swiss-grid
+# helvegrid
 
-A model of the Swiss 220/380 kV transmission grid built only from public data, with an AC power flow and a DC optimal power flow (OPF) for any hour of a year.
+A model of the Swiss 220/380 kV transmission grid built only from public data, with an AC power flow and a DC optimal power flow (OPF) for one hour or every hour of several years.
 
 ## Data
 
@@ -17,13 +17,13 @@ Everything is downloaded on the first run and kept in `data/`.
 ## Run
 
 ```bash
-cd swiss-grid
+cd helvegrid
 python -m venv .venv
 .venv/bin/pip install -r requirements.txt
 .venv/bin/jupyter lab run.ipynb
 ```
 
-The first run downloads about 60 MB and takes about 2 minutes. After that, the notebook runs in about 30 seconds.
+The first run downloads about 60 MB and runs two years hour by hour, which takes about 15 minutes. The results are saved in `data/`, so after that the notebook runs in under a minute.
 
 To use it from Python instead:
 
@@ -37,6 +37,16 @@ network.run_opf(net)           # DC OPF, sets the plant outputs to the optimal d
 network.summary(net)
 ```
 
+For many hours (in parallel on all CPU cores):
+
+```python
+swissgrid, generation = data.swissgrid(2025), data.generation(2025)
+hours = swissgrid.index.intersection(generation.index)
+per_hour, line_loading = network.run_hours(net, swissgrid, generation, hours, method="ac")   # or "dc", "opf"
+```
+
+`per_hour` has one row per hour (production per type, import per country, load, losses, highest line loading). `line_loading` has the loading of every line in every hour. Hours where the solver fails are left out.
+
 ## How the model works
 
 - **Grid.** The model keeps every OSM line with at least one end in Switzerland. The foreign end of a cross-border line becomes a border substation. Line impedance and rating come from PyPSA-Eur.
@@ -45,7 +55,7 @@ network.summary(net)
 - **Borders.** The Swissgrid exchange with each neighbour (AT, DE, FR, IT) is split over that country's border substations by line capacity.
 - **Power flow.** Newton-Raphson (pandapower). The slack is the border substation with the most line capacity. It covers the losses and the small gap in the data.
 - **OPF.** DC OPF (pandapower, PYPOWER solver). Load and border exchange stay fixed, and the OPF picks the cheapest Swiss dispatch with every line and transformer at or below its limit.
-  - Nuclear and storage hydro can produce up to their installed capacity.
+  - Storage hydro can produce up to its installed capacity.
   - The other plants can produce up to their output in that hour.
   - If no dispatch meets the limits, pandapower raises `OPFNotConverged`.
 
@@ -68,5 +78,5 @@ Further simplifications:
 | File | Content |
 |---|---|
 | `data.py` | Downloads and reads the public data |
-| `network.py` | Builds the pandapower grid, sets one hour, runs the power flow and the OPF |
+| `network.py` | Builds the pandapower grid, sets one hour, runs the power flow and the OPF, for one hour or many |
 | `run.ipynb` | Step-by-step example with maps and tables |

@@ -1,3 +1,7 @@
+from concurrent.futures import ProcessPoolExecutor
+from itertools import repeat
+import os
+
 import numpy as np
 import pandas as pd
 import pandapower as pp
@@ -132,15 +136,20 @@ def run_power_flow(net):
     return net
 
 
+def run_dc_power_flow(net):
+    pp.rundcpp(net, numba=False)
+    return net
+
+
 def run_opf(net):
     """DC optimal power flow: cheapest Swiss dispatch for this hour's load and exchange, within the line limits.
 
-    Nuclear and storage hydro may run up to their installed capacity, the other plants up to this hour's output.
+    Storage hydro may run up to its installed capacity, the other plants up to this hour's output.
     The exchange with each neighbour stays as measured; the slack is expensive, so it is used only when nothing else works.
     """
     net.poly_cost = net.poly_cost.iloc[0:0]
     plants = net.sgen.type != "Border"
-    dispatchable = net.sgen.type.isin(["Nuclear", "Hydro storage"])
+    dispatchable = net.sgen.type == "Hydro storage"
     net.sgen["controllable"] = plants
     net.sgen.loc[plants, "min_p_mw"] = 0.0
     net.sgen.loc[plants, "max_p_mw"] = np.where(dispatchable, net.sgen.capacity_mw, net.sgen.p_mw)[plants]
@@ -157,4 +166,32 @@ def summary(net):
     production = net.res_sgen.p_mw[plants].groupby(net.sgen.type[plants]).sum()
     exchange = net.res_sgen.p_mw[~plants].groupby(net.bus.zone[net.sgen.bus[~plants]].values).sum()
     exchange["slack"] = net.res_ext_grid.p_mw.sum()
-    return pd.concat({"production MW": production, "import MW": exchange}).round(0) + 0.0
+    grid = pd.Series({"load MW": net.load.p_mw.sum(), "losses MW": net.res_line.pl_mw.sum() + net.res_trafo.pl_mw.sum(),
+                      "max line loading %": net.res_line.loading_percent.max(), "min voltage pu": net.res_bus.vm_pu.min()})
+    return pd.concat({"production MW": production, "import MW": exchange, "grid": grid}).round(2) + 0.0
+
+
+SOLVERS = {"ac": run_power_flow, "dc": run_dc_power_flow, "opf": run_opf}
+
+
+def run_hours(net, swissgrid, generation, hours, method="ac", workers=None):
+    """Run one solver for many hours in parallel. Returns the summary per hour and the line loading per hour.
+    Hours where the solver fails are left out."""
+    chunks = np.array_split(pd.DatetimeIndex(hours), 4 * (workers or os.cpu_count()))
+    inputs = ([swissgrid.loc[c] for c in chunks], [generation.loc[c] for c in chunks])
+    with ProcessPoolExecutor(workers) as pool:
+        parts = list(pool.map(_run_chunk, repeat(net), *inputs, repeat(method)))
+    return pd.concat([p[0] for p in parts]), pd.concat([p[1] for p in parts])
+
+
+def _run_chunk(net, swissgrid, generation, method):
+    rows, loading = {}, {}
+    for hour in swissgrid.index:
+        set_hour(net, swissgrid, generation, hour)
+        try:
+            SOLVERS[method](net)
+        except (pp.LoadflowNotConverged, pp.OPFNotConverged):
+            continue
+        rows[hour] = summary(net)
+        loading[hour] = net.res_line.loading_percent.set_axis(net.line.name)
+    return pd.DataFrame(rows).T, pd.DataFrame(loading).T
